@@ -1,0 +1,5 @@
+# ambiente local / editor
+.DS_Store
+Thumbs.db
+
+# dados de teste servidos localmente (sem segredos, mas sem necessidade de versionar)

@@ -121,9 +121,20 @@ const DB = {
     this.upsertObra(obra);
   },
 
-  getCurrentUser() { return this._read(STORAGE_KEYS.CURRENT_USER, null); },
-  setCurrentUser(u) { this._write(STORAGE_KEYS.CURRENT_USER, u); },
-  clearCurrentUser() { localStorage.removeItem(STORAGE_KEYS.CURRENT_USER); },
+  // A sessão de login usa sessionStorage (não localStorage) de propósito: ela deve
+  // durar só enquanto a janela/aba do navegador estiver aberta. Fechou a janela,
+  // a sessão some e a próxima abertura do app volta pra tela de login pedindo senha.
+  getCurrentUser() {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      console.error('Erro lendo sessão', e);
+      return null;
+    }
+  },
+  setCurrentUser(u) { sessionStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(u)); },
+  clearCurrentUser() { sessionStorage.removeItem(STORAGE_KEYS.CURRENT_USER); },
 
   getTheme() { return localStorage.getItem(STORAGE_KEYS.THEME) || 'light'; },
   setTheme(t) { localStorage.setItem(STORAGE_KEYS.THEME, t); },

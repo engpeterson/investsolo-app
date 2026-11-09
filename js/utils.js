@@ -53,6 +53,50 @@ function diasEntre(isoA, isoB) {
   return Math.round((b - a) / 86400000);
 }
 
+// Mostra a data de execução como período (início – término) quando a obra dura
+// mais de um dia, ou só a data única quando é serviço de um dia só.
+function formatPeriodoExecucao(obra) {
+  const inicio = obra.dataExecucao;
+  const fim = obra.dataTerminoExecucao || obra.dataExecucao;
+  if (!inicio) return '—';
+  if (!fim || fim === inicio) return formatDateBR(inicio);
+  return `${formatDateBR(inicio)} – ${formatDateBR(fim)}`;
+}
+
+// ---- Dias de trabalho: nunca domingo; sábado depende da configuração da Agenda ----
+const DIAS_SEMANA_NOMES = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+function nomeDiaSemana(iso) {
+  return DIAS_SEMANA_NOMES[new Date(iso + 'T00:00:00').getDay()];
+}
+
+function diaBloqueadoParaObra(iso, cfg) {
+  const dow = new Date(iso + 'T00:00:00').getDay(); // 0 = domingo, 6 = sábado
+  if (dow === 0) return true;
+  if (dow === 6 && !(cfg && cfg.trabalhaSabado)) return true;
+  return false;
+}
+
+// Varre todo o período (início até término, inclusive) e retorna a primeira
+// data bloqueada encontrada, ou null se o período inteiro for válido.
+function primeiroDiaBloqueadoNoPeriodo(inicioISO, fimISO, cfg) {
+  let atual = inicioISO;
+  let guarda = 0;
+  while (atual <= fimISO && guarda < 3660) {
+    if (diaBloqueadoParaObra(atual, cfg)) return atual;
+    atual = addDaysISO(atual, 1);
+    guarda++;
+  }
+  return null;
+}
+
+// ---- Contas a pagar: status derivado (pendente / atrasado / pago) ----
+function statusContaInfo(conta) {
+  if (conta.status === 'pago') return { chave: 'pago', label: 'Pago', cor: 'var(--sucesso)' };
+  if (conta.vencimento && conta.vencimento < todayISO()) return { chave: 'atrasado', label: 'Atrasado', cor: 'var(--perigo)' };
+  return { chave: 'pendente', label: 'Pendente', cor: 'var(--alerta)' };
+}
+
 function prioridadeClasse(p) {
   return { Baixa: 'prio-baixa', Média: 'prio-media', Alta: 'prio-alta' }[p] || '';
 }

@@ -7,9 +7,21 @@ function labelStatus(id) {
   return c ? c.label : id;
 }
 
-function obrasFiltradas() {
+function arquivarObra(obraId, arquivar) {
+  const obra = DB.getObra(obraId);
+  if (!obra) return;
+  obra.arquivada = arquivar;
+  DB.upsertObra(obra);
+  DB.addHistorico(obraId, arquivar ? 'Obra arquivada' : 'Obra restaurada do arquivo');
+  toast(arquivar ? 'Obra arquivada. Encontre-a na pasta "Arquivadas" em Obras.' : 'Obra restaurada para o quadro ativo.', 'success');
+  Views.refreshCurrent();
+  if (window.Dashboard) Dashboard.refreshIndicators();
+}
+
+function obrasFiltradas(escopo) {
   const f = AppState.filters;
   let obras = DB.getObras();
+  obras = obras.filter(o => escopo === 'arquivadas' ? !!o.arquivada : !o.arquivada);
   const clientesById = Object.fromEntries(DB.getClientes().map(c => [c.id, c]));
 
   if (f.busca) {
@@ -86,6 +98,14 @@ function createCardEl(obra) {
     return chip;
   }));
 
+  const arquivarBtn = el('button', { class: 'icon-btn kcard-archive-btn', type: 'button', title: 'Arquivar obra' });
+  arquivarBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M3 4h18v4H3zM5 8v12h14V8M10 12h4"/></svg>';
+  arquivarBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!confirmDialog(`Arquivar a obra "${obra.nomeObra}"? Ela sairá do quadro e ficará disponível na pasta "Arquivadas" em Obras.`)) return;
+    arquivarObra(obra.id, true);
+  });
+
   card.append(
     tags,
     el('div', { class: 'kcard-title' }, obra.nomeObra || '(sem nome)'),
@@ -93,12 +113,15 @@ function createCardEl(obra) {
       el('span', {}, `Cidade: ${obra.cidade || '—'}/${obra.estado || ''}`),
       el('span', {}, `Responsável: ${obra.responsavel || '—'}`),
       el('span', {}, `Pontos: ${obra.quantidadePontos || 0} (${obra.tipoSondagem || '—'})`),
-      el('span', {}, `Execução: ${formatDateBR(obra.dataExecucao)}`),
+      el('span', {}, `Execução: ${formatPeriodoExecucao(obra)}`),
       el('span', {}, `Relatório até: ${formatDateBR(obra.prazoRelatorio)}`),
     ]),
     el('div', { class: 'kcard-foot' }, [
       el('span', { class: `prio-badge ${prioridadeClasse(obra.prioridade)}` }, obra.prioridade),
-      el('span', { class: 'kcard-mini-avatar' }, iniciais(obra.responsavel)),
+      el('div', { style: 'display:flex;align-items:center;gap:4px;' }, [
+        el('span', { class: 'kcard-mini-avatar' }, iniciais(obra.responsavel)),
+        arquivarBtn,
+      ]),
     ]),
   );
   return card;
@@ -112,10 +135,10 @@ function novaObraVazia(prefill) {
     clienteId: prefill?.clienteId || (clientes[0] ? clientes[0].id : ''),
     empresaContratante: '',
     cidade: '', estado: '', endereco: '',
-    coordenadas: { lat: '', lng: '' },
     responsavel: '', equipeCampo: '',
     quantidadePontos: '', tipoSondagem: TIPOS_SONDAGEM[0],
     dataExecucao: prefill?.data || todayISO(),
+    dataTerminoExecucao: prefill?.data || todayISO(),
     prazoRelatorio: '',
     status: prefill?.status || 'agendados',
     prioridade: 'Média',
@@ -124,6 +147,7 @@ function novaObraVazia(prefill) {
     dataVencimentoCobranca: '',
     mensagemEnviada: false,
     observacoes: '',
+    arquivada: false,
     anexos: [], checklist: [], comentarios: [], historico: [],
   };
 }
@@ -137,7 +161,6 @@ function openObraModal(obraId, prefill) {
   const original = isNew ? novaObraVazia(prefill) : DB.getObra(obraId);
   if (!original) { toast('Obra não encontrada.', 'error'); return; }
   const obra = JSON.parse(JSON.stringify(original));
-  obra.coordenadas = obra.coordenadas || { lat: '', lng: '' };
 
   const refs = {};
   const clientes = DB.getClientes();
@@ -158,15 +181,66 @@ function openObraModal(obraId, prefill) {
   });
   refs.cidade = el('input', { type: 'text', value: obra.cidade });
   refs.estado = el('input', { type: 'text', value: obra.estado, maxlength: '2' });
+
+  // ---- Cadastrar cliente novo sem sair da ficha da obra ----
+  const ncNome = el('input', { type: 'text', placeholder: 'Nome do cliente' });
+  const ncEmpresa = el('input', { type: 'text', placeholder: 'Empresa (opcional)' });
+  const ncWhatsapp = el('input', { type: 'text', placeholder: '5511999998888 (opcional)' });
+  const ncSalvarBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm' }, 'Salvar cliente');
+  const ncCancelarBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, 'Cancelar');
+  const novoClientePainel = el('div', { class: 'col-2 hidden', style: 'border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:-4px;background:var(--cinza-50);' }, [
+    el('div', { class: 'form-grid', style: 'margin-bottom:10px;' }, [
+      field('Nome', ncNome),
+      field('Empresa', ncEmpresa),
+      field('WhatsApp', ncWhatsapp),
+    ]),
+    el('div', { style: 'display:flex;gap:8px;' }, [ncSalvarBtn, ncCancelarBtn]),
+  ]);
+  function limparPainelNovoCliente() {
+    ncNome.value = ''; ncEmpresa.value = ''; ncWhatsapp.value = '';
+    novoClientePainel.classList.add('hidden');
+  }
+  const novoClienteBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'white-space:nowrap;' }, '+ Novo cliente');
+  novoClienteBtn.addEventListener('click', () => {
+    novoClientePainel.classList.toggle('hidden');
+    if (!novoClientePainel.classList.contains('hidden')) ncNome.focus();
+  });
+  ncCancelarBtn.addEventListener('click', limparPainelNovoCliente);
+  ncSalvarBtn.addEventListener('click', () => {
+    if (!ncNome.value.trim()) { toast('Informe o nome do cliente.', 'error'); return; }
+    const novoCliente = {
+      id: uid('cli'),
+      nome: ncNome.value.trim(),
+      empresa: ncEmpresa.value.trim(),
+      cpfCnpj: '',
+      whatsapp: ncWhatsapp.value.replace(/\D/g, ''),
+      email: '',
+      cidade: refs.cidade.value.trim(),
+      estado: refs.estado.value.trim().toUpperCase(),
+      endereco: '',
+      observacoes: `Cadastrado a partir da ficha da obra "${refs.nomeObra.value.trim() || '(sem nome)'}".`,
+    };
+    DB.upsertCliente(novoCliente);
+    refs.clienteId.appendChild(el('option', { value: novoCliente.id }, `${novoCliente.nome} — ${novoCliente.empresa}`));
+    refs.clienteId.value = novoCliente.id;
+    refs.clienteId.dispatchEvent(new Event('change'));
+    limparPainelNovoCliente();
+    toast('Cliente cadastrado e vinculado a esta obra.', 'success');
+  });
   refs.endereco = el('input', { type: 'text', value: obra.endereco });
-  refs.lat = el('input', { type: 'text', value: obra.coordenadas.lat, placeholder: 'ex: -23.5613' });
-  refs.lng = el('input', { type: 'text', value: obra.coordenadas.lng, placeholder: 'ex: -46.6560' });
   refs.responsavel = el('input', { type: 'text', value: obra.responsavel });
   refs.equipeCampo = el('input', { type: 'text', value: obra.equipeCampo });
   refs.quantidadePontos = el('input', { type: 'number', min: '0', value: obra.quantidadePontos });
   refs.tipoSondagem = el('select', {}, TIPOS_SONDAGEM.map(t => el('option', { value: t }, t)));
   refs.tipoSondagem.value = obra.tipoSondagem;
-  refs.dataExecucao = el('input', { type: 'date', value: obra.dataExecucao });
+  refs.dataExecucao = el('input', { type: 'date', value: obra.dataExecucao, required: '' });
+  refs.dataTerminoExecucao = el('input', { type: 'date', value: obra.dataTerminoExecucao || obra.dataExecucao, min: obra.dataExecucao, required: '' });
+  refs.dataExecucao.addEventListener('change', () => {
+    refs.dataTerminoExecucao.min = refs.dataExecucao.value;
+    if (refs.dataTerminoExecucao.value && refs.dataTerminoExecucao.value < refs.dataExecucao.value) {
+      refs.dataTerminoExecucao.value = refs.dataExecucao.value;
+    }
+  });
   refs.prazoRelatorio = el('input', { type: 'date', value: obra.prazoRelatorio });
   refs.status = el('select', {}, COLUNAS.map(c => el('option', { value: c.id }, c.label)));
   refs.status.value = obra.status;
@@ -192,8 +266,7 @@ function openObraModal(obraId, prefill) {
 
   const mapsBtn = el('a', { class: 'map-link', target: '_blank', rel: 'noopener' }, 'Abrir localização no Google Maps');
   mapsBtn.addEventListener('click', (e) => {
-    const lat = refs.lat.value.trim(), lng = refs.lng.value.trim();
-    const query = lat && lng ? `${lat},${lng}` : `${refs.endereco.value}, ${refs.cidade.value} ${refs.estado.value}`;
+    const query = `${refs.endereco.value}, ${refs.cidade.value} ${refs.estado.value}`;
     mapsBtn.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   });
   mapsBtn.href = '#';
@@ -201,19 +274,19 @@ function openObraModal(obraId, prefill) {
   const detalhesPane = el('div', { class: 'tab-pane active', 'data-pane': 'detalhes' }, [
     el('div', { class: 'form-grid' }, [
       field('Nome da obra', refs.nomeObra, 'col-2'),
-      field('Cliente', refs.clienteId),
+      field('Cliente', el('div', { style: 'display:flex;gap:6px;' }, [refs.clienteId, novoClienteBtn])),
       field('Empresa contratante', refs.empresaContratante),
+      novoClientePainel,
       field('Cidade', refs.cidade),
       field('Estado (UF)', refs.estado),
       field('Endereço da obra', refs.endereco, 'col-2'),
-      field('Latitude', refs.lat),
-      field('Longitude', refs.lng),
       el('div', { class: 'col-2' }, mapsBtn),
       field('Responsável', refs.responsavel),
       field('Equipe de campo', refs.equipeCampo),
       field('Quantidade de pontos', refs.quantidadePontos),
       field('Tipo de sondagem', refs.tipoSondagem),
       field('Data de execução', refs.dataExecucao),
+      field('Data de término da execução', refs.dataTerminoExecucao),
       field('Prazo do relatório', refs.prazoRelatorio),
       field('Status', refs.status),
       field('Prioridade', refs.prioridade),
@@ -346,7 +419,7 @@ function openObraModal(obraId, prefill) {
   const body = el('div', {}, [tabsNav, detalhesPane, checklistPane, anexosPane, comentariosPane, ...(isNew ? [] : [historicoPane])]);
 
   const excluirBtn = el('button', { class: 'btn btn-danger', type: 'button' }, 'Excluir');
-  excluirBtn.style.marginRight = 'auto';
+  excluirBtn.style.marginRight = isNew ? '' : '8px';
   excluirBtn.addEventListener('click', () => {
     if (!confirmDialog('Tem certeza que deseja excluir esta obra? Essa ação não pode ser desfeita.')) return;
     DB.deleteObra(obraId);
@@ -355,10 +428,29 @@ function openObraModal(obraId, prefill) {
     Views.refreshCurrent();
   });
 
+  const arquivarModalBtn = el('button', { class: 'btn btn-ghost', type: 'button' }, obra.arquivada ? 'Restaurar do arquivo' : 'Arquivar obra');
+  arquivarModalBtn.style.marginRight = 'auto';
+  arquivarModalBtn.addEventListener('click', () => {
+    if (!obra.arquivada && !confirmDialog(`Arquivar a obra "${obra.nomeObra}"? Ela sairá do quadro e ficará disponível na pasta "Arquivadas" em Obras.`)) return;
+    arquivarObra(obraId, !obra.arquivada);
+    closeModal();
+  });
+
   const cancelarBtn = el('button', { class: 'btn btn-ghost', type: 'button', onclick: closeModal }, 'Cancelar');
   const salvarBtn = el('button', { class: 'btn btn-primary', type: 'button' }, isNew ? 'Criar obra' : 'Salvar alterações');
   salvarBtn.addEventListener('click', () => {
     if (!refs.nomeObra.value.trim()) { toast('Informe o nome da obra.', 'error'); return; }
+    if (!refs.dataExecucao.value) { toast('Informe a data de execução.', 'error'); return; }
+    if (!refs.dataTerminoExecucao.value) { toast('Informe a data de término da execução.', 'error'); return; }
+    if (refs.dataTerminoExecucao.value < refs.dataExecucao.value) {
+      toast('A data de término da execução não pode ser antes da data de execução.', 'error');
+      return;
+    }
+    const diaBloqueado = primeiroDiaBloqueadoNoPeriodo(refs.dataExecucao.value, refs.dataTerminoExecucao.value, DB.getConfigAgenda());
+    if (diaBloqueado) {
+      toast(`Não é possível agendar para ${formatDateBR(diaBloqueado)} (${nomeDiaSemana(diaBloqueado)}) — não trabalhamos nesse dia.`, 'error');
+      return;
+    }
     const atualizado = {
       id: obraId || uid('obr'),
       nomeObra: refs.nomeObra.value.trim(),
@@ -367,12 +459,12 @@ function openObraModal(obraId, prefill) {
       cidade: refs.cidade.value.trim(),
       estado: refs.estado.value.trim().toUpperCase(),
       endereco: refs.endereco.value.trim(),
-      coordenadas: { lat: refs.lat.value.trim(), lng: refs.lng.value.trim() },
       responsavel: refs.responsavel.value.trim(),
       equipeCampo: refs.equipeCampo.value.trim(),
       quantidadePontos: Number(refs.quantidadePontos.value) || 0,
       tipoSondagem: refs.tipoSondagem.value,
       dataExecucao: refs.dataExecucao.value,
+      dataTerminoExecucao: refs.dataTerminoExecucao.value,
       prazoRelatorio: refs.prazoRelatorio.value,
       status: refs.status.value,
       prioridade: refs.prioridade.value,
@@ -381,6 +473,7 @@ function openObraModal(obraId, prefill) {
       dataVencimentoCobranca: refs.dataVencimentoCobranca.value,
       mensagemEnviada: refs.mensagemEnviada.checked,
       observacoes: refs.observacoes.value.trim(),
+      arquivada: !!obra.arquivada,
       anexos, checklist, comentarios,
       historico: obra.historico || [],
     };
@@ -394,7 +487,7 @@ function openObraModal(obraId, prefill) {
   openModal({
     title: isNew ? 'Nova obra' : obra.nomeObra,
     body,
-    foot: isNew ? [cancelarBtn, salvarBtn] : [excluirBtn, cancelarBtn, salvarBtn],
+    foot: isNew ? [cancelarBtn, salvarBtn] : [arquivarModalBtn, excluirBtn, cancelarBtn, salvarBtn],
     size: 'lg',
   });
 }

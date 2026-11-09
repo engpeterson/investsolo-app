@@ -10,7 +10,8 @@ function filterSelect(placeholder, options, key, onChange) {
   return sel;
 }
 
-function buildFiltersBar(onChange) {
+function buildFiltersBar(onChange, opts) {
+  const { mostrarPontosMin = true } = opts || {};
   const obras = DB.getObras();
   const cidades = [...new Set(obras.map(o => o.cidade).filter(Boolean))].sort();
   const responsaveis = [...new Set(obras.map(o => o.responsavel).filter(Boolean))].sort();
@@ -26,10 +27,12 @@ function buildFiltersBar(onChange) {
     filterSelect('Ano', anos, 'ano', onChange),
   ]);
 
-  const pontosInput = el('input', { type: 'number', placeholder: 'Pontos mínimos', min: '0' });
-  pontosInput.value = AppState.filters.pontosMin || '';
-  pontosInput.addEventListener('input', debounce(() => { AppState.filters.pontosMin = pontosInput.value; onChange(); }, 300));
-  bar.appendChild(pontosInput);
+  if (mostrarPontosMin) {
+    const pontosInput = el('input', { type: 'number', placeholder: 'Pontos mínimos', min: '0' });
+    pontosInput.value = AppState.filters.pontosMin || '';
+    pontosInput.addEventListener('input', debounce(() => { AppState.filters.pontosMin = pontosInput.value; onChange(); }, 300));
+    bar.appendChild(pontosInput);
+  }
 
   const limpar = el('button', { class: 'btn btn-ghost btn-sm', type: 'button' }, 'Limpar filtros');
   limpar.addEventListener('click', () => {
@@ -40,26 +43,32 @@ function buildFiltersBar(onChange) {
   return bar;
 }
 
+// Os indicadores por status (Agendadas/Campo/Relatório/Cobrança) não aparecem
+// mais aqui: o número já fica visível no cabeçalho de cada coluna do quadro
+// Kanban logo abaixo, então repeti-los aqui só duplicava a informação.
+const ICON_PONTOS = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>';
+const ICON_VALOR = '<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><circle cx="12" cy="12" r="2.6"/><path d="M6 10v4M18 10v4"/></svg>';
+
 function renderIndicators(container) {
   container.innerHTML = '';
-  const obras = DB.getObras();
+  const obras = DB.getObras().filter(o => !o.arquivada);
   const mesAtual = todayISO().slice(0, 7);
   const obrasMes = obras.filter(o => (o.dataExecucao || '').startsWith(mesAtual));
-  const totalPontosMes = obrasMes.reduce((s, o) => s + (Number(o.quantidadePontos) || 0), 0);
   const valorMes = obrasMes.reduce((s, o) => s + (Number(o.valorPrevisto) || 0), 0);
+  const obrasAgendadas = obras.filter(o => o.status === 'agendados');
+  const totalPontosAgendados = obrasAgendadas.reduce((s, o) => s + (Number(o.quantidadePontos) || 0), 0);
 
   const cards = [
-    ['Obras Agendadas', obras.filter(o => o.status === 'agendados').length],
-    ['Em Campo', obras.filter(o => o.status === 'campo').length],
-    ['Em Relatório', obras.filter(o => o.status === 'relatorio').length],
-    ['Pendentes de Cobrança', obras.filter(o => o.status === 'cobrar').length],
-    ['Total de Pontos do Mês', totalPontosMes],
+    { lbl: 'Pontos Agendados', val: String(totalPontosAgendados), icon: ICON_PONTOS, accent: 'azul' },
   ];
   if (isPeterson(Auth.getCurrentUser())) {
-    cards.push(['Valor Previsto do Mês', formatMoneyBR(valorMes)]);
+    cards.push({ lbl: 'Valor Previsto do Mês', val: formatMoneyBR(valorMes), icon: ICON_VALOR, accent: 'sucesso' });
   }
-  cards.forEach(([lbl, val]) => {
-    container.appendChild(el('div', { class: 'indicator-card' }, [el('div', { class: 'val' }, String(val)), el('div', { class: 'lbl' }, lbl)]));
+  cards.forEach(c => {
+    container.appendChild(el('div', { class: 'indicator-card' }, [
+      el('div', { class: 'indicator-icon', style: `--accent: var(--${c.accent})`, html: c.icon }),
+      el('div', {}, [el('div', { class: 'val' }, c.val), el('div', { class: 'lbl' }, c.lbl)]),
+    ]));
   });
 }
 
@@ -68,16 +77,18 @@ const Dashboard = {
     container.innerHTML = '';
     const novaBtn = el('button', { class: 'btn btn-primary', type: 'button' }, '+ Nova obra');
     novaBtn.addEventListener('click', () => openObraModal(null));
+    const orcamentoBtn = criarUploadOrcamento();
 
+    const indicators = el('div', { class: 'indicators', id: 'indicators-wrap' });
     const header = el('div', { class: 'view-header' }, [
       el('h2', {}, 'Painel de Obras'),
-      el('div', { class: 'view-actions' }, [novaBtn]),
+      indicators,
+      el('div', { class: 'view-actions' }, [orcamentoBtn, novaBtn]),
     ]);
-    const indicators = el('div', { class: 'indicators', id: 'indicators-wrap' });
-    const filters = buildFiltersBar(() => Views.refreshCurrent());
+    const filters = buildFiltersBar(() => Views.refreshCurrent(), { mostrarPontosMin: false });
     const boardWrap = el('div', { id: 'kanban-wrap' });
 
-    container.append(header, indicators, filters, boardWrap);
+    container.append(header, filters, boardWrap);
     renderIndicators(indicators);
     renderKanbanBoard(boardWrap);
   },

@@ -8,10 +8,11 @@ const AppState = {
 const Views = {
   dashboard: Dashboard,
   agenda: Agenda,
-  whatsapp: WhatsAppView,
   clientes: ClientesView,
   obras: ObrasView,
   relatorios: RelatoriosView,
+  'contas-pagar': ContasPagarView,
+  ia: AssistenteIaView,
   usuarios: UsuariosView,
   refreshCurrent() {
     const view = this[AppState.currentView];
@@ -44,28 +45,35 @@ function computeNotifications() {
   const hoje = todayISO();
   const amanha = addDaysISO(hoje, 1);
   const notifs = [];
-  DB.getObras().forEach(o => {
+  DB.getObras().filter(o => !o.arquivada).forEach(o => {
     if (o.dataExecucao === amanha && o.status === 'agendados') {
-      notifs.push({ tipo: 'amanha', texto: `Serviço "${o.nomeObra}" é amanhã (${formatDateBR(o.dataExecucao)}).` });
+      notifs.push({ tipo: 'amanha', chave: `amanha:${o.id}`, texto: `Serviço "${o.nomeObra}" é amanhã (${formatDateBR(o.dataExecucao)}).` });
     }
     if (o.status === 'relatorio' && o.prazoRelatorio && o.prazoRelatorio < hoje) {
-      notifs.push({ tipo: 'atraso', texto: `Relatório da obra "${o.nomeObra}" está atrasado (prazo ${formatDateBR(o.prazoRelatorio)}).` });
+      notifs.push({ tipo: 'atraso', chave: `atraso:${o.id}`, texto: `Relatório da obra "${o.nomeObra}" está atrasado (prazo ${formatDateBR(o.prazoRelatorio)}).` });
     }
     if (o.status === 'cobrar' && o.dataVencimentoCobranca && o.dataVencimentoCobranca < hoje) {
-      notifs.push({ tipo: 'cobranca', texto: `Cobrança da obra "${o.nomeObra}" está vencida (venceu ${formatDateBR(o.dataVencimentoCobranca)}).` });
+      notifs.push({ tipo: 'cobranca', chave: `cobranca:${o.id}`, texto: `Cobrança da obra "${o.nomeObra}" está vencida (venceu ${formatDateBR(o.dataVencimentoCobranca)}).` });
     }
     if (!o.mensagemEnviada && o.status !== 'cobrar') {
-      notifs.push({ tipo: 'whatsapp', texto: `Cliente da obra "${o.nomeObra}" ainda não recebeu mensagem no WhatsApp.` });
+      notifs.push({ tipo: 'whatsapp', chave: `whatsapp:${o.id}`, texto: `Cliente da obra "${o.nomeObra}" ainda não recebeu mensagem no WhatsApp.` });
     }
   });
   return notifs;
 }
 
+// O número no sininho conta só as notificações cuja chave ainda não está na
+// lista de "vistas" (guardada no localStorage). Abrir o painel marca todas as
+// notificações atuais como vistas, zerando o número — mas ele volta a subir
+// assim que surgir uma notificação nova (chave ainda não vista).
 function renderNotifications() {
   const notifs = computeNotifications();
+  const vistas = new Set(DB.getNotifsVistas());
+  const naoVistas = notifs.filter(n => !vistas.has(n.chave));
+
   const countEl = document.getElementById('notif-count');
-  countEl.textContent = String(notifs.length);
-  countEl.classList.toggle('hidden', notifs.length === 0);
+  countEl.textContent = String(naoVistas.length);
+  countEl.classList.toggle('hidden', naoVistas.length === 0);
 
   const panel = document.getElementById('notif-panel');
   panel.innerHTML = '';
@@ -76,6 +84,12 @@ function renderNotifications() {
       panel.appendChild(el('div', { class: 'notif-item' }, [el('strong', {}, tituloNotif(n.tipo)), n.texto]));
     });
   }
+}
+
+function marcarNotificacoesComoVistas() {
+  const chaves = computeNotifications().map(n => n.chave);
+  DB.setNotifsVistas(chaves);
+  renderNotifications();
 }
 
 function populateLoginUsers() {
@@ -107,6 +121,8 @@ function boot() {
     btn.classList.toggle('hidden', !Auth.can(btn.dataset.view));
   });
 
+  DB.gerarContasRecorrentesDoMes();
+  DB.gerarFinancasPessoaisRecorrentesDoMes();
   applyTheme(DB.getTheme());
   const primeiraSecaoPermitida = (PERMISSOES[user.perfil] || ['dashboard'])[0];
   switchView(Auth.can('dashboard') ? 'dashboard' : primeiraSecaoPermitida);
@@ -147,7 +163,10 @@ document.getElementById('global-search').addEventListener('input', debounce((e) 
 }, 250));
 
 document.getElementById('notif-btn').addEventListener('click', () => {
-  document.getElementById('notif-panel').classList.toggle('hidden');
+  const panel = document.getElementById('notif-panel');
+  const vaiAbrir = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
+  if (vaiAbrir) marcarNotificacoesComoVistas();
 });
 document.addEventListener('click', (e) => {
   const wrap = document.querySelector('.notif-wrap');
@@ -156,4 +175,5 @@ document.addEventListener('click', (e) => {
 });
 
 seedDatabase();
+seedFinancasPessoaisSeNecessario();
 boot();

@@ -3,10 +3,10 @@
 const PERFIS = ['Administrador', 'Administrativo', 'Campo', 'Financeiro'];
 
 const PERMISSOES = {
-  Administrador: ['dashboard', 'agenda', 'whatsapp', 'clientes', 'obras', 'relatorios', 'usuarios'],
-  Administrativo: ['dashboard', 'agenda', 'whatsapp', 'clientes', 'obras', 'relatorios'],
+  Administrador: ['dashboard', 'agenda', 'clientes', 'obras', 'relatorios', 'usuarios', 'ia', 'contas-pagar'],
+  Administrativo: ['dashboard', 'agenda', 'clientes', 'obras', 'relatorios', 'ia'],
   Campo: ['dashboard', 'agenda', 'obras'],
-  Financeiro: ['dashboard', 'whatsapp', 'clientes', 'obras', 'relatorios'],
+  Financeiro: ['dashboard', 'clientes', 'obras', 'relatorios', 'ia', 'contas-pagar'],
 };
 
 const Auth = {

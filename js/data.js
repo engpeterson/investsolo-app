@@ -7,6 +7,13 @@ const STORAGE_KEYS = {
   CURRENT_USER: 'is_current_user',
   THEME: 'is_theme',
   SEEDED: 'is_seeded_v3',
+  NOTIFS_VISTAS: 'is_notifs_vistas',
+  IA_CONFIG: 'is_ia_config',
+  IA_HISTORICO: 'is_ia_historico',
+  CONFIG_AGENDA: 'is_config_agenda',
+  CONTAS_PAGAR: 'is_contas_pagar',
+  FINANCAS_PESSOAIS: 'is_financas_pessoais',
+  FINANCAS_PESSOAIS_SEEDED: 'is_financas_pessoais_seeded_v1',
 };
 
 const COLUNAS = [
@@ -19,6 +26,10 @@ const COLUNAS = [
 const PRIORIDADES = ['Baixa', 'Média', 'Alta'];
 
 const TIPOS_SONDAGEM = ['SPT', 'CPT', 'Rotativa', 'Mista', 'Trado'];
+
+const CATEGORIAS_CONTA = ['Aluguel', 'Contabilidade', 'Impostos', 'Internet', 'Cartão de Crédito', 'Combustível', 'Manutenção de Equipamentos', 'Outros'];
+
+const CATEGORIAS_FINANCA_PESSOAL = ['Casa', 'Saúde', 'Educação', 'Lazer', 'Cartão Pessoal', 'Mercado', 'Outros'];
 
 const ETIQUETAS_DISPONIVEIS = [
   { nome: 'Urgente', cor: '#C0392B' },
@@ -138,7 +149,110 @@ const DB = {
 
   getTheme() { return localStorage.getItem(STORAGE_KEYS.THEME) || 'light'; },
   setTheme(t) { localStorage.setItem(STORAGE_KEYS.THEME, t); },
+
+  // Chaves das notificações que o usuário já abriu o sino e viu (zera o número
+  // no sininho até aparecer alguma notificação nova que ainda não foi vista).
+  getNotifsVistas() { return this._read(STORAGE_KEYS.NOTIFS_VISTAS, []); },
+  setNotifsVistas(chaves) { this._write(STORAGE_KEYS.NOTIFS_VISTAS, chaves); },
+
+  // Configuração do Assistente de IA (chave de API etc). Fica só no navegador
+  // deste computador — nunca é enviada a nenhum lugar além da própria API de IA.
+  getIaConfig() { return this._read(STORAGE_KEYS.IA_CONFIG, { apiKey: '', modelo: 'claude-sonnet-4-5-20250929', incluirDados: true }); },
+  setIaConfig(cfg) { this._write(STORAGE_KEYS.IA_CONFIG, cfg); },
+
+  getIaHistorico() { return this._read(STORAGE_KEYS.IA_HISTORICO, []); },
+  setIaHistorico(msgs) { this._write(STORAGE_KEYS.IA_HISTORICO, msgs); },
+
+  // Regras de dias de trabalho da Agenda: nunca se trabalha domingo; sábado é
+  // opcional e começa desligado (não trabalha) até o usuário ligar na Agenda.
+  getConfigAgenda() { return this._read(STORAGE_KEYS.CONFIG_AGENDA, { trabalhaSabado: false }); },
+  setConfigAgenda(cfg) { this._write(STORAGE_KEYS.CONFIG_AGENDA, cfg); },
+
+  getContasPagar() { return this._read(STORAGE_KEYS.CONTAS_PAGAR, []); },
+  saveContasPagar(list) { this._write(STORAGE_KEYS.CONTAS_PAGAR, list); },
+  getConta(id) { return this.getContasPagar().find(c => c.id === id); },
+  upsertConta(conta) {
+    const list = this.getContasPagar();
+    const idx = list.findIndex(c => c.id === conta.id);
+    if (idx >= 0) list[idx] = conta; else list.push(conta);
+    this.saveContasPagar(list);
+    return conta;
+  },
+  deleteConta(id) {
+    this.saveContasPagar(this.getContasPagar().filter(c => c.id !== id));
+  },
+
+  // Contas fixas mensais (recorrente: true) não precisam ser recadastradas todo mês:
+  // esta função garante que sempre exista um lançamento pendente até o mês atual em
+  // cada série (mesma recorrenciaId), gerando a partir do último lançamento conhecido.
+  // Compartilhada entre Contas a Pagar (empresa) e Finanças Pessoais, que têm o
+  // mesmo formato de lançamento.
+  gerarContasRecorrentesDoMes() {
+    const contas = this.getContasPagar();
+    if (gerarRecorrentesDoMesEmLista(contas, 'cta')) this.saveContasPagar(contas);
+  },
+
+  getFinancasPessoais() { return this._read(STORAGE_KEYS.FINANCAS_PESSOAIS, []); },
+  saveFinancasPessoais(list) { this._write(STORAGE_KEYS.FINANCAS_PESSOAIS, list); },
+  getFinancaPessoal(id) { return this.getFinancasPessoais().find(c => c.id === id); },
+  upsertFinancaPessoal(conta) {
+    const list = this.getFinancasPessoais();
+    const idx = list.findIndex(c => c.id === conta.id);
+    if (idx >= 0) list[idx] = conta; else list.push(conta);
+    this.saveFinancasPessoais(list);
+    return conta;
+  },
+  deleteFinancaPessoal(id) {
+    this.saveFinancasPessoais(this.getFinancasPessoais().filter(c => c.id !== id));
+  },
+  gerarFinancasPessoaisRecorrentesDoMes() {
+    const contas = this.getFinancasPessoais();
+    if (gerarRecorrentesDoMesEmLista(contas, 'fp')) this.saveFinancasPessoais(contas);
+  },
 };
+
+// Função genérica usada tanto por Contas a Pagar quanto por Finanças Pessoais
+// (mesmo formato de lançamento: descrição, categoria, valor, vencimento, status,
+// recorrente, recorrenciaId). Muta a lista recebida empurrando os lançamentos que
+// faltam até o mês atual e devolve true se gerou algo novo.
+function gerarRecorrentesDoMesEmLista(lista, prefixoId) {
+  const mesAtual = todayISO().slice(0, 7); // "AAAA-MM"
+  const ultimaPorSerie = {};
+  lista.forEach(c => {
+    if (!c.recorrente || !c.recorrenciaId) return;
+    if (!ultimaPorSerie[c.recorrenciaId] || c.vencimento > ultimaPorSerie[c.recorrenciaId].vencimento) {
+      ultimaPorSerie[c.recorrenciaId] = c;
+    }
+  });
+  let criouAlguma = false;
+  Object.values(ultimaPorSerie).forEach(ultima => {
+    let refVenc = ultima.vencimento;
+    let guarda = 0;
+    while (refVenc.slice(0, 7) < mesAtual && guarda < 240) {
+      const [ano, mes, dia] = refVenc.split('-').map(Number);
+      let proxAno = ano, proxMes = mes + 1;
+      if (proxMes > 12) { proxMes = 1; proxAno++; }
+      const ultimoDiaProxMes = new Date(proxAno, proxMes, 0).getDate();
+      const diaAjustado = Math.min(dia, ultimoDiaProxMes);
+      const novoVenc = `${proxAno}-${String(proxMes).padStart(2, '0')}-${String(diaAjustado).padStart(2, '0')}`;
+      lista.push({
+        id: uid(prefixoId),
+        descricao: ultima.descricao,
+        categoria: ultima.categoria,
+        valor: ultima.valor,
+        vencimento: novoVenc,
+        status: 'pendente',
+        dataPagamento: null,
+        recorrente: true,
+        recorrenciaId: ultima.recorrenciaId,
+      });
+      refVenc = novoVenc;
+      criouAlguma = true;
+      guarda++;
+    }
+  });
+  return criouAlguma;
+}
 
 function seedDatabase() {
   if (localStorage.getItem(STORAGE_KEYS.SEEDED)) return;
@@ -165,15 +279,15 @@ function seedDatabase() {
   const obrasSeed = [
     {
       nomeObra: 'Sondagem SPT — Edifício Alencar', clienteId: clientes[0].id, empresaContratante: clientes[0].empresa,
-      cidade: 'São Paulo', estado: 'SP', endereco: 'Av. Paulista, 1000', coordenadas: { lat: -23.5613, lng: -46.6560 },
+      cidade: 'São Paulo', estado: 'SP', endereco: 'Av. Paulista, 1000',
       responsavel: 'João Ferreira', equipeCampo: 'Equipe 1', quantidadePontos: 8, tipoSondagem: 'SPT',
-      dataExecucao: addDaysISO(hoje, 1), prazoRelatorio: addDaysISO(hoje, 10), status: 'agendados', prioridade: 'Alta',
+      dataExecucao: addDaysISO(hoje, 1), dataTerminoExecucao: addDaysISO(hoje, 3), prazoRelatorio: addDaysISO(hoje, 10), status: 'agendados', prioridade: 'Alta',
       etiquetas: ['Urgente', 'Zona Urbana'], valorPrevisto: 12000, dataVencimentoCobranca: addDaysISO(hoje, 30), mensagemEnviada: false,
       observacoes: 'Acesso pela garagem do edifício.',
     },
     {
       nomeObra: 'Sondagem Mista — Galpão Costa', clienteId: clientes[1].id, empresaContratante: clientes[1].empresa,
-      cidade: 'Campinas', estado: 'SP', endereco: 'Rua das Indústrias, 250', coordenadas: { lat: -22.9099, lng: -47.0626 },
+      cidade: 'Campinas', estado: 'SP', endereco: 'Rua das Indústrias, 250',
       responsavel: 'João Ferreira', equipeCampo: 'Equipe 2', quantidadePontos: 15, tipoSondagem: 'Mista',
       dataExecucao: addDaysISO(hoje, 3), prazoRelatorio: addDaysISO(hoje, 14), status: 'agendados', prioridade: 'Média',
       etiquetas: ['Zona Rural'], valorPrevisto: 21000, dataVencimentoCobranca: addDaysISO(hoje, 35), mensagemEnviada: true,
@@ -181,7 +295,7 @@ function seedDatabase() {
     },
     {
       nomeObra: 'CPT — Residencial Tanaka', clienteId: clientes[2].id, empresaContratante: clientes[2].empresa,
-      cidade: 'Guarulhos', estado: 'SP', endereco: 'Av. Guarulhos, 500', coordenadas: { lat: -23.4543, lng: -46.5337 },
+      cidade: 'Guarulhos', estado: 'SP', endereco: 'Av. Guarulhos, 500',
       responsavel: 'João Ferreira', equipeCampo: 'Equipe 1', quantidadePontos: 6, tipoSondagem: 'CPT',
       dataExecucao: hoje, prazoRelatorio: addDaysISO(hoje, 7), status: 'campo', prioridade: 'Alta',
       etiquetas: ['Acesso Difícil'], valorPrevisto: 9500, dataVencimentoCobranca: addDaysISO(hoje, 25), mensagemEnviada: true,
@@ -189,23 +303,23 @@ function seedDatabase() {
     },
     {
       nomeObra: 'Sondagem Rotativa — Condomínio Prado', clienteId: clientes[3].id, empresaContratante: clientes[3].empresa,
-      cidade: 'Sorocaba', estado: 'SP', endereco: 'Rua Sorocaba, 88', coordenadas: { lat: -23.5015, lng: -47.4526 },
+      cidade: 'Sorocaba', estado: 'SP', endereco: 'Rua Sorocaba, 88',
       responsavel: 'João Ferreira', equipeCampo: 'Equipe 2', quantidadePontos: 20, tipoSondagem: 'Rotativa',
-      dataExecucao: addDaysISO(hoje, -2), prazoRelatorio: addDaysISO(hoje, 5), status: 'campo', prioridade: 'Média',
+      dataExecucao: addDaysISO(hoje, -2), dataTerminoExecucao: addDaysISO(hoje, 1), prazoRelatorio: addDaysISO(hoje, 5), status: 'campo', prioridade: 'Média',
       etiquetas: [], valorPrevisto: 28000, dataVencimentoCobranca: addDaysISO(hoje, 20), mensagemEnviada: false,
       observacoes: '',
     },
     {
       nomeObra: 'SPT — Torre Nogueira Fase 2', clienteId: clientes[4].id, empresaContratante: clientes[4].empresa,
-      cidade: 'São Bernardo do Campo', estado: 'SP', endereco: 'Av. ABC, 300', coordenadas: { lat: -23.6939, lng: -46.5650 },
+      cidade: 'São Bernardo do Campo', estado: 'SP', endereco: 'Av. ABC, 300',
       responsavel: 'Ana Paula Souza', equipeCampo: 'Equipe 1', quantidadePontos: 12, tipoSondagem: 'SPT',
-      dataExecucao: addDaysISO(hoje, -6), prazoRelatorio: addDaysISO(hoje, -1), status: 'relatorio', prioridade: 'Alta',
+      dataExecucao: addDaysISO(hoje, -6), dataTerminoExecucao: addDaysISO(hoje, -4), prazoRelatorio: addDaysISO(hoje, -1), status: 'relatorio', prioridade: 'Alta',
       etiquetas: ['Urgente'], valorPrevisto: 18000, dataVencimentoCobranca: addDaysISO(hoje, 15), mensagemEnviada: true,
       observacoes: 'Relatório atrasado — priorizar.',
     },
     {
       nomeObra: 'Trado — Loteamento Alencar Norte', clienteId: clientes[0].id, empresaContratante: clientes[0].empresa,
-      cidade: 'São Paulo', estado: 'SP', endereco: 'Rua Norte, 45', coordenadas: { lat: -23.5300, lng: -46.6200 },
+      cidade: 'São Paulo', estado: 'SP', endereco: 'Rua Norte, 45',
       responsavel: 'Ana Paula Souza', equipeCampo: 'Equipe 2', quantidadePontos: 10, tipoSondagem: 'Trado',
       dataExecucao: addDaysISO(hoje, -10), prazoRelatorio: addDaysISO(hoje, -3), status: 'relatorio', prioridade: 'Baixa',
       etiquetas: [], valorPrevisto: 8000, dataVencimentoCobranca: addDaysISO(hoje, 10), mensagemEnviada: true,
@@ -213,7 +327,7 @@ function seedDatabase() {
     },
     {
       nomeObra: 'Sondagem SPT — Shopping Costa', clienteId: clientes[1].id, empresaContratante: clientes[1].empresa,
-      cidade: 'Campinas', estado: 'SP', endereco: 'Av. Shopping, 700', coordenadas: { lat: -22.9200, lng: -47.0700 },
+      cidade: 'Campinas', estado: 'SP', endereco: 'Av. Shopping, 700',
       responsavel: 'Márcia Lima', equipeCampo: 'Equipe 1', quantidadePontos: 25, tipoSondagem: 'SPT',
       dataExecucao: addDaysISO(hoje, -20), prazoRelatorio: addDaysISO(hoje, -12), status: 'cobrar', prioridade: 'Média',
       etiquetas: [], valorPrevisto: 32000, dataVencimentoCobranca: addDaysISO(hoje, -2), mensagemEnviada: true,
@@ -221,7 +335,7 @@ function seedDatabase() {
     },
     {
       nomeObra: 'CPT — Anexo Tanaka', clienteId: clientes[2].id, empresaContratante: clientes[2].empresa,
-      cidade: 'Guarulhos', estado: 'SP', endereco: 'Av. Guarulhos, 520', coordenadas: { lat: -23.4560, lng: -46.5300 },
+      cidade: 'Guarulhos', estado: 'SP', endereco: 'Av. Guarulhos, 520',
       responsavel: 'Márcia Lima', equipeCampo: 'Equipe 2', quantidadePontos: 9, tipoSondagem: 'CPT',
       dataExecucao: addDaysISO(hoje, -15), prazoRelatorio: addDaysISO(hoje, -8), status: 'cobrar', prioridade: 'Baixa',
       etiquetas: ['Retrabalho'], valorPrevisto: 11000, dataVencimentoCobranca: addDaysISO(hoje, 3), mensagemEnviada: false,
@@ -231,6 +345,7 @@ function seedDatabase() {
 
   const obras = obrasSeed.map(o => ({
     id: uid('obr'),
+    dataTerminoExecucao: o.dataExecucao, // padrão: serviço de 1 dia só, a menos que a obra abaixo diga outra data
     ...o,
     anexos: [],
     checklist: [
@@ -243,5 +358,80 @@ function seedDatabase() {
   }));
   DB.saveObras(obras);
 
+  // Contas fixas mensais (recorrentes), com vencimento neste mês.
+  const contasRecorrentesSeed = [
+    { descricao: 'Aluguel do galpão', categoria: 'Aluguel', valor: 3200, diaBase: 5 },
+    { descricao: 'Honorários contábeis', categoria: 'Contabilidade', valor: 850, diaBase: 10 },
+    { descricao: 'Internet e telefonia', categoria: 'Internet', valor: 320, diaBase: 15 },
+    { descricao: 'Fatura cartão de crédito PJ', categoria: 'Cartão de Crédito', valor: 4150, diaBase: 20 },
+  ];
+  const [anoAtual, mesAtual] = hoje.split('-');
+  const ultimoDiaMesAtual = new Date(Number(anoAtual), Number(mesAtual), 0).getDate();
+  const contasPagar = contasRecorrentesSeed.map(c => {
+    const diaAjustado = Math.min(c.diaBase, ultimoDiaMesAtual);
+    return {
+      id: uid('cta'),
+      descricao: c.descricao,
+      categoria: c.categoria,
+      valor: c.valor,
+      vencimento: `${anoAtual}-${mesAtual}-${String(diaAjustado).padStart(2, '0')}`,
+      status: 'pendente',
+      dataPagamento: null,
+      recorrente: true,
+      recorrenciaId: uid('rec'),
+    };
+  });
+  // Algumas contas avulsas, pra mostrar variedade: um imposto a vencer, uma já paga e uma atrasada.
+  contasPagar.push(
+    { id: uid('cta'), descricao: 'DAS — Simples Nacional', categoria: 'Impostos', valor: 1180, vencimento: addDaysISO(hoje, 6), status: 'pendente', dataPagamento: null, recorrente: false, recorrenciaId: null },
+    { id: uid('cta'), descricao: 'Troca de óleo — caminhão de apoio', categoria: 'Manutenção de Equipamentos', valor: 640, vencimento: addDaysISO(hoje, -25), status: 'pago', dataPagamento: addDaysISO(hoje, -24), recorrente: false, recorrenciaId: null },
+    { id: uid('cta'), descricao: 'Combustível — abastecimento mensal', categoria: 'Combustível', valor: 1450, vencimento: addDaysISO(hoje, -4), status: 'pendente', dataPagamento: null, recorrente: false, recorrenciaId: null },
+  );
+  DB.saveContasPagar(contasPagar);
+
+  seedFinancasPessoaisSeNecessario();
+
   localStorage.setItem(STORAGE_KEYS.SEEDED, '1');
+}
+
+// Semeadura das Finanças Pessoais, separada do seedDatabase() principal (que só
+// roda na primeira vez que o app abre) porque essa área foi adicionada depois.
+// Quem já tinha usado o app antes dela existir já está com a flag SEEDED marcada
+// e nunca passaria por seedDatabase() de novo — então essa função tem sua própria
+// flag e roda de forma independente a cada boot, preenchendo os dados de exemplo
+// pra quem ainda não os tem, sem sobrescrever nada que o usuário já tenha criado.
+function seedFinancasPessoaisSeNecessario() {
+  if (localStorage.getItem(STORAGE_KEYS.FINANCAS_PESSOAIS_SEEDED)) return;
+
+  if (DB.getFinancasPessoais().length === 0) {
+    const hoje = todayISO();
+    const [anoAtual, mesAtual] = hoje.split('-');
+    const ultimoDiaMesAtual = new Date(Number(anoAtual), Number(mesAtual), 0).getDate();
+
+    const financasRecorrentesSeed = [
+      { descricao: 'Plano de saúde da família', categoria: 'Saúde', valor: 890, diaBase: 8 },
+      { descricao: 'Financiamento do carro', categoria: 'Casa', valor: 1350, diaBase: 12 },
+      { descricao: 'Escola dos filhos', categoria: 'Educação', valor: 1600, diaBase: 5 },
+    ];
+    const financasPessoais = financasRecorrentesSeed.map(c => {
+      const diaAjustado = Math.min(c.diaBase, ultimoDiaMesAtual);
+      return {
+        id: uid('fp'),
+        descricao: c.descricao,
+        categoria: c.categoria,
+        valor: c.valor,
+        vencimento: `${anoAtual}-${mesAtual}-${String(diaAjustado).padStart(2, '0')}`,
+        status: 'pendente',
+        dataPagamento: null,
+        recorrente: true,
+        recorrenciaId: uid('rec'),
+      };
+    });
+    financasPessoais.push(
+      { id: uid('fp'), descricao: 'Supermercado do mês', categoria: 'Mercado', valor: 980, vencimento: addDaysISO(hoje, 2), status: 'pendente', dataPagamento: null, recorrente: false, recorrenciaId: null },
+    );
+    DB.saveFinancasPessoais(financasPessoais);
+  }
+
+  localStorage.setItem(STORAGE_KEYS.FINANCAS_PESSOAIS_SEEDED, '1');
 }
